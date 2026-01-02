@@ -1,0 +1,9 @@
+{
+    "id": "backlinks-chronosort",
+    "name": "Backlinks Chronological Sort",
+    "version": "1.0.0",
+    "minAppVersion": "1.0.0",
+    "description": "Re-sorts native backlinks chronologically, parsing daily note dates from filenames.",
+    "author": "Scott Hurff",
+    "isDesktopOnly": false
+}
