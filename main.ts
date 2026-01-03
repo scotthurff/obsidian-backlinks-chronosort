@@ -16,32 +16,55 @@ const DEFAULT_SETTINGS: ChronoSortSettings = {
 
 export default class BacklinksChronoSortPlugin extends Plugin {
     settings: ChronoSortSettings;
-    private observers: MutationObserver[] = [];
-    private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
-    private isSorting = false;  // Prevent infinite loop
+    private pendingSort: NodeJS.Timeout | null = null;
+    private styleEl: HTMLStyleElement | null = null;
 
     async onload() {
         await this.loadSettings();
 
         console.log('[ChronoSort] Plugin loaded');
 
-        // Register for layout changes
-        this.registerEvent(
-            this.app.workspace.on('layout-change', () => {
-                this.setupObservers();
-            })
-        );
+        // Style element (not used for flex anymore, kept for potential future use)
+        this.styleEl = document.createElement('style');
+        this.styleEl.id = 'chronosort-styles';
+        this.styleEl.textContent = '';
+        document.head.appendChild(this.styleEl);
 
-        // Register for active leaf changes
+        // Register for active leaf changes (when user switches notes)
         this.registerEvent(
             this.app.workspace.on('active-leaf-change', () => {
-                this.setupObservers();
+                if (this.settings.debugMode) {
+                    console.log('[ChronoSort] active-leaf-change event');
+                }
+                this.scheduleSortBacklinks();
             })
         );
 
-        // Initial setup
+        // Register for layout changes (panes opening/closing)
+        this.registerEvent(
+            this.app.workspace.on('layout-change', () => {
+                if (this.settings.debugMode) {
+                    console.log('[ChronoSort] layout-change event');
+                }
+                this.scheduleSortBacklinks();
+            })
+        );
+
+        // Initial setup when layout is ready
         this.app.workspace.onLayoutReady(() => {
-            this.setupObservers();
+            if (this.settings.debugMode) {
+                console.log('[ChronoSort] Layout ready');
+            }
+            this.scheduleSortBacklinks();
+        });
+
+        // Add a command to manually re-sort backlinks
+        this.addCommand({
+            id: 'sort-backlinks-now',
+            name: 'Sort backlinks chronologically now',
+            callback: () => {
+                this.sortAllBacklinks();
+            }
         });
 
         // Add settings tab
@@ -50,7 +73,17 @@ export default class BacklinksChronoSortPlugin extends Plugin {
 
     onunload() {
         console.log('[ChronoSort] Plugin unloaded');
-        this.disconnectObservers();
+        if (this.pendingSort) {
+            clearTimeout(this.pendingSort);
+        }
+        // Remove our style element
+        if (this.styleEl) {
+            this.styleEl.remove();
+        }
+        // Remove our marker attributes from containers
+        document.querySelectorAll('[data-chronosort-done]').forEach(el => {
+            el.removeAttribute('data-chronosort-done');
+        });
     }
 
     async loadSettings() {
@@ -61,36 +94,71 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         await this.saveData(this.settings);
     }
 
-    private disconnectObservers() {
-        this.observers.forEach(obs => obs.disconnect());
-        this.observers = [];
-        this.debounceTimers.forEach(timer => clearTimeout(timer));
-        this.debounceTimers.clear();
+    /**
+     * Schedule a sort operation with debouncing
+     */
+    private scheduleSortBacklinks() {
+        if (this.pendingSort) {
+            clearTimeout(this.pendingSort);
+        }
+
+        // Wait 500ms for backlinks to render, then sort
+        this.pendingSort = setTimeout(() => {
+            this.sortAllBacklinks();
+            this.pendingSort = null;
+        }, 500);
     }
 
-    private setupObservers() {
-        // Disconnect existing observers
-        this.disconnectObservers();
+    /**
+     * Sort all backlink containers
+     */
+    private sortAllBacklinks() {
+        if (this.settings.debugMode) {
+            console.log('[ChronoSort] Running sortAllBacklinks');
+        }
 
         if (this.settings.enableInDocument) {
-            this.observeInDocumentBacklinks();
+            this.sortInDocumentBacklinks();
+            // Also sort Daily Notes Editor backlinks (uses in-document setting)
+            this.sortDailyNotesEditorBacklinks();
         }
 
         if (this.settings.enableSidebar) {
-            this.observeSidebarBacklinks();
+            this.sortSidebarBacklinks();
         }
     }
 
     /**
-     * Observe in-document backlinks (at bottom of note)
+     * Sort in-document backlinks (at bottom of note)
      */
-    private observeInDocumentBacklinks() {
-        // Find the active markdown view
+    private sortInDocumentBacklinks() {
         const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (!activeView) return;
+        if (!activeView) {
+            if (this.settings.debugMode) {
+                console.log('[ChronoSort] No active markdown view');
+            }
+            return;
+        }
 
-        // Look for backlinks container in the view
-        const backlinksContainer = activeView.containerEl.querySelector('.backlink-pane');
+        // Try multiple selectors for the backlinks container
+        const selectors = [
+            '.backlink-pane .search-result-container',
+            '.backlink-pane',
+            '.embedded-backlinks .search-result-container',
+            '.embedded-backlinks'
+        ];
+
+        let backlinksContainer: HTMLElement | null = null;
+        for (const selector of selectors) {
+            backlinksContainer = activeView.containerEl.querySelector(selector) as HTMLElement;
+            if (backlinksContainer) {
+                if (this.settings.debugMode) {
+                    console.log(`[ChronoSort] Found in-document backlinks with selector: ${selector}`);
+                }
+                break;
+            }
+        }
+
         if (!backlinksContainer) {
             if (this.settings.debugMode) {
                 console.log('[ChronoSort] No in-document backlinks container found');
@@ -98,19 +166,29 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             return;
         }
 
-        if (this.settings.debugMode) {
-            console.log('[ChronoSort] Found in-document backlinks container');
-        }
-
-        this.createObserver(backlinksContainer as HTMLElement, 'in-document');
+        this.applySortOrder(backlinksContainer, 'in-document');
     }
 
     /**
-     * Observe sidebar backlinks pane
+     * Sort sidebar backlinks pane
      */
-    private observeSidebarBacklinks() {
-        // Find sidebar backlinks pane
-        const backlinkPane = document.querySelector('div[data-type="backlink"] .search-result-container');
+    private sortSidebarBacklinks() {
+        const selectors = [
+            'div[data-type="backlink"] .search-result-container',
+            '.workspace-leaf-content[data-type="backlink"] .search-result-container'
+        ];
+
+        let backlinkPane: HTMLElement | null = null;
+        for (const selector of selectors) {
+            backlinkPane = document.querySelector(selector) as HTMLElement;
+            if (backlinkPane) {
+                if (this.settings.debugMode) {
+                    console.log(`[ChronoSort] Found sidebar backlinks with selector: ${selector}`);
+                }
+                break;
+            }
+        }
+
         if (!backlinkPane) {
             if (this.settings.debugMode) {
                 console.log('[ChronoSort] No sidebar backlinks pane found');
@@ -118,53 +196,70 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             return;
         }
 
-        if (this.settings.debugMode) {
-            console.log('[ChronoSort] Found sidebar backlinks pane');
+        this.applySortOrder(backlinkPane, 'sidebar');
+    }
+
+    /**
+     * Sort backlinks in Daily Notes Editor view
+     * The Daily Notes Editor plugin shows multiple daily notes stacked,
+     * each with their own .embedded-backlinks section
+     */
+    private sortDailyNotesEditorBacklinks() {
+        // Find all Daily Notes Editor containers in the document
+        // The plugin uses .daily-note-editor class (not .daily-note-view)
+        const dailyNotesViews = document.querySelectorAll('.daily-note-editor');
+
+        if (dailyNotesViews.length === 0) {
+            if (this.settings.debugMode) {
+                console.log('[ChronoSort] No Daily Notes Editor views found');
+            }
+            return;
         }
 
-        this.createObserver(backlinkPane as HTMLElement, 'sidebar');
+        if (this.settings.debugMode) {
+            console.log(`[ChronoSort] Found ${dailyNotesViews.length} Daily Notes Editor view(s)`);
+        }
+
+        // For each Daily Notes Editor view, find all backlinks containers
+        dailyNotesViews.forEach((view, viewIndex) => {
+            const backlinksContainers = view.querySelectorAll('.embedded-backlinks .search-result-container');
+
+            if (backlinksContainers.length === 0) {
+                // Try fallback selector
+                const fallbackContainers = view.querySelectorAll('.embedded-backlinks');
+                if (this.settings.debugMode) {
+                    console.log(`[ChronoSort] Daily Notes Editor view ${viewIndex}: ${fallbackContainers.length} embedded-backlinks found (fallback)`);
+                }
+                fallbackContainers.forEach((container, containerIndex) => {
+                    this.applySortOrder(container as HTMLElement, `daily-notes-editor-${viewIndex}-${containerIndex}`);
+                });
+            } else {
+                if (this.settings.debugMode) {
+                    console.log(`[ChronoSort] Daily Notes Editor view ${viewIndex}: ${backlinksContainers.length} backlinks containers found`);
+                }
+                backlinksContainers.forEach((container, containerIndex) => {
+                    this.applySortOrder(container as HTMLElement, `daily-notes-editor-${viewIndex}-${containerIndex}`);
+                });
+            }
+        });
     }
 
     /**
-     * Create a MutationObserver for a backlinks container
+     * Sort backlinks by moving DOM elements ONCE, then leave them alone.
+     * We mark containers as sorted and don't re-sort them to avoid
+     * interfering with Obsidian's expand/collapse/context features.
      */
-    private createObserver(container: HTMLElement, type: string) {
-        const observer = new MutationObserver((mutations) => {
-            // Skip if we're currently sorting (prevents infinite loop)
-            if (this.isSorting) {
-                return;
+    private applySortOrder(container: HTMLElement, type: string) {
+        // Check if we've already sorted this container
+        if (container.hasAttribute('data-chronosort-done')) {
+            if (this.settings.debugMode) {
+                console.log(`[ChronoSort] Container ${type} already sorted, skipping`);
             }
+            return;
+        }
 
-            // Debounce to wait for render complete
-            const existingTimer = this.debounceTimers.get(type);
-            if (existingTimer) {
-                clearTimeout(existingTimer);
-            }
-
-            const timer = setTimeout(() => {
-                this.sortBacklinks(container, type);
-            }, 150);  // Wait 150ms for render to complete
-
-            this.debounceTimers.set(type, timer);
-        });
-
-        observer.observe(container, {
-            childList: true,
-            subtree: true
-        });
-
-        this.observers.push(observer);
-
-        // Also sort immediately in case backlinks are already rendered
-        setTimeout(() => this.sortBacklinks(container, type), 200);
-    }
-
-    /**
-     * Sort backlinks in a container
-     */
-    private sortBacklinks(container: HTMLElement, type: string) {
         // Find all backlink result items
-        const resultItems = container.querySelectorAll('.tree-item.search-result');
+        const resultItems = container.querySelectorAll(':scope > .tree-item.search-result');
 
         if (resultItems.length === 0) {
             if (this.settings.debugMode) {
@@ -174,16 +269,20 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         }
 
         if (this.settings.debugMode) {
-            console.log(`[ChronoSort] Sorting ${resultItems.length} backlinks in ${type}`);
+            console.log(`[ChronoSort] Sorting ${resultItems.length} backlinks in ${type} (one-time)`);
         }
 
-        // Convert to array and extract timestamps
-        const itemsWithTimestamps: { element: Element; timestamp: number; filename: string }[] = [];
+        // Collect items with timestamps
+        const itemsWithTimestamps: { element: HTMLElement; timestamp: number; filename: string }[] = [];
 
         resultItems.forEach(item => {
             const filename = this.extractFilename(item);
             const timestamp = this.getTimestamp(filename);
-            itemsWithTimestamps.push({ element: item, timestamp, filename });
+            itemsWithTimestamps.push({
+                element: item as HTMLElement,
+                timestamp,
+                filename
+            });
         });
 
         // Sort by timestamp
@@ -200,25 +299,16 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             );
         }
 
-        // Find the parent container to re-append items
-        const parent = resultItems[0]?.parentElement;
-        if (!parent) return;
-
-        // Set flag to prevent observer from triggering during our DOM changes
-        this.isSorting = true;
-
-        // Re-append in sorted order (moves elements)
-        itemsWithTimestamps.forEach(item => {
-            parent.appendChild(item.element);
+        // Move elements in DOM order (appendChild moves, doesn't clone)
+        itemsWithTimestamps.forEach((item) => {
+            container.appendChild(item.element);
         });
 
-        // Reset flag after a short delay to allow DOM to settle
-        setTimeout(() => {
-            this.isSorting = false;
-        }, 50);
+        // Mark container as sorted so we don't re-sort on future events
+        container.setAttribute('data-chronosort-done', 'true');
 
         if (this.settings.debugMode) {
-            console.log(`[ChronoSort] Re-sorted ${itemsWithTimestamps.length} items`);
+            console.log(`[ChronoSort] Sorted ${itemsWithTimestamps.length} items in ${type} (will not re-sort)`);
         }
     }
 
@@ -226,10 +316,7 @@ export default class BacklinksChronoSortPlugin extends Plugin {
      * Extract filename from a backlink tree item
      */
     private extractFilename(item: Element): string {
-        // Look for the file title specifically - this is the direct child of the search result
-        // We need to avoid picking up match content lines inside .search-result-file-matches
-
-        // First, try the self container (the tree-item-self contains the actual file link)
+        // First, try the self container
         const selfContainer = item.querySelector(':scope > .tree-item-self .tree-item-inner');
         if (selfContainer) {
             const text = selfContainer.textContent?.trim() || '';
@@ -239,7 +326,7 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             if (text) return text;
         }
 
-        // Try search-result-file-title (used by some Obsidian versions)
+        // Try search-result-file-title
         const fileTitle = item.querySelector('.search-result-file-title');
         if (fileTitle) {
             const text = fileTitle.textContent?.trim() || '';
@@ -252,7 +339,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         // Try the first .tree-item-inner that's NOT inside .search-result-file-matches
         const allInners = item.querySelectorAll('.tree-item-inner');
         for (const inner of Array.from(allInners)) {
-            // Skip if this is inside the matches container (content snippets)
             if (inner.closest('.search-result-file-matches')) continue;
 
             const text = inner.textContent?.trim() || '';
@@ -272,8 +358,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
 
     /**
      * Get timestamp for a filename
-     * - Daily notes (Roam format): Parse date from filename
-     * - Regular notes: Use 'edited' frontmatter, fall back to mtime
      */
     private getTimestamp(filename: string): number {
         // Try to parse as Roam-format daily note
@@ -307,7 +391,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         }
 
         if (file && file instanceof TFile) {
-            // Try frontmatter 'edited' date first
             const frontmatterTimestamp = this.getFrontmatterDate(file);
             if (frontmatterTimestamp !== null) {
                 if (this.settings.debugMode) {
@@ -316,7 +399,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
                 return frontmatterTimestamp;
             }
 
-            // Fall back to mtime
             if (this.settings.debugMode) {
                 console.log(`[ChronoSort] Using mtime for "${filename}": ${new Date(file.stat.mtime).toISOString()}`);
             }
@@ -336,7 +418,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         if (this.settings.debugMode) {
             console.log(`[ChronoSort] No timestamp found for "${filename}", returning 0`);
         }
-        // Last resort: return 0
         return 0;
     }
 
@@ -360,13 +441,11 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             return null;
         }
 
-        // Try 'edited' first, then 'created' as fallback
         const dateStr = cache.frontmatter['edited'] || cache.frontmatter['created'];
         if (!dateStr) {
             return null;
         }
 
-        // Parse YYYY-MM-DD format
         const match = String(dateStr).match(/^(\d{4})-(\d{2})-(\d{2})$/);
         if (!match) {
             if (this.settings.debugMode) {
@@ -382,7 +461,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
 
     /**
      * Parse Roam-format date: "December 4th, 2025" -> timestamp
-     * Also handles dates embedded in text like "# [[December 4th, 2025]] meeting"
      */
     private parseRoamDate(filename: string): number | null {
         const months: Record<string, number> = {
@@ -391,10 +469,8 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             'September': 8, 'October': 9, 'November': 10, 'December': 11
         };
 
-        // First try exact match: "December 4th, 2025" or "January 1st, 2025"
         let match = filename.match(/^(\w+)\s+(\d+)(?:st|nd|rd|th),\s+(\d{4})$/);
 
-        // If no exact match, try to find a date inside [[...]] brackets
         if (!match) {
             const bracketMatch = filename.match(/\[\[(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d+)(?:st|nd|rd|th),\s+(\d{4})\]\]/);
             if (bracketMatch) {
@@ -415,7 +491,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
 
         const date = new Date(parseInt(year), month, parseInt(day));
 
-        // Validate the date
         if (date.getFullYear() !== parseInt(year) ||
             date.getMonth() !== month ||
             date.getDate() !== parseInt(day)) {
@@ -435,7 +510,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         const [, year, month, day] = match;
         const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
 
-        // Validate
         if (date.getFullYear() !== parseInt(year) ||
             date.getMonth() !== parseInt(month) - 1 ||
             date.getDate() !== parseInt(day)) {
