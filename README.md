@@ -27,11 +27,13 @@ A custom Obsidian plugin that sorts backlinks chronologically (newest first) ins
 
 ### Technical Implementation
 
-1. **MutationObserver Pattern**: The plugin uses `MutationObserver` to detect when Obsidian renders backlinks in the DOM, then re-sorts them after a 150ms debounce delay.
+1. **Event-Driven Sorting**: The plugin listens for `active-leaf-change` and `layout-change` events, then sorts backlinks after a 500ms debounce delay.
 
-2. **Infinite Loop Prevention**: A `isSorting` flag prevents the observer from triggering during DOM manipulation.
+2. **One-Time DOM Sort**: Each backlinks container is sorted once and marked with `data-chronosort-done` to avoid re-sorting, which preserves Obsidian's expand/collapse functionality.
 
-3. **Date Priority**:
+3. **Daily Notes Editor Support**: Automatically detects and sorts backlinks in the Daily Notes Editor plugin's multi-note view.
+
+4. **Date Priority**:
    - First tries to parse Roam-format dates from the filename (`MMMM Do, YYYY`)
    - Then tries to find dates inside `[[...]]` brackets in the text
    - Then tries ISO format (`YYYY-MM-DD`)
@@ -95,9 +97,14 @@ cp main.js ~/.obsidian/plugins/backlinks-chronosort/
 
 ## Known Limitations
 
+### Plugin Limitations
 - Only sorts top-level backlink items (the file names), not nested content within each backlink
 - Items without parseable dates or frontmatter sort to the bottom (timestamp 0)
-- Some heading content may be extracted instead of filenames in certain edge cases
+- **One-time sort**: Backlinks are sorted once when loaded. Use command palette "Sort backlinks chronologically now" to manually re-sort if needed
+
+### Third-Party Plugin Interactions
+- **Daily Notes Editor**: The "Show more context" toggle does not work in Daily Notes Editor view. This is a limitation of the Daily Notes Editor plugin itself, not this plugin. "Collapse results" works correctly.
+- **Better Search Views**: Rich markdown formatting may be lost after toggling context on/off. This is a Better Search Views plugin issue.
 
 ## License
 
