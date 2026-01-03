@@ -11,7 +11,7 @@ const DEFAULT_SETTINGS: ChronoSortSettings = {
     enableInDocument: true,
     enableSidebar: true,
     sortDescending: true,  // newest first
-    debugMode: true  // Enable for development
+    debugMode: false  // Disable console logging by default
 };
 
 export default class BacklinksChronoSortPlugin extends Plugin {
