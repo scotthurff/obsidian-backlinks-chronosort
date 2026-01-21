@@ -244,41 +244,26 @@ export default class BacklinksChronoSortPlugin extends Plugin {
      * Sort backlinks by moving DOM elements on every navigation.
      */
     private applySortOrder(container: HTMLElement, type: string) {
-        // Try multiple selectors for backlink result items
-        const itemSelectors = [
-            ':scope > .tree-item.search-result',
-            ':scope > .search-result',
-            '.tree-item.search-result',
-            '.search-result'
-        ];
-
-        let resultItems: NodeListOf<Element> | null = null;
-        let usedSelector = '';
-
-        for (const selector of itemSelectors) {
-            const items = container.querySelectorAll(selector);
-            if (items.length > 0) {
-                resultItems = items;
-                usedSelector = selector;
-                break;
-            }
+        // Find the actual parent of backlink items
+        // Obsidian structure: .search-result-container > .search-results-children > .tree-item.search-result
+        let itemsParent: HTMLElement = container;
+        const childrenWrapper = container.querySelector(':scope > .search-results-children') as HTMLElement;
+        if (childrenWrapper) {
+            itemsParent = childrenWrapper;
         }
 
-        if (!resultItems || resultItems.length === 0) {
+        // Only select DIRECT children to avoid grabbing nested match previews
+        const resultItems = itemsParent.querySelectorAll(':scope > .tree-item.search-result');
+
+        if (resultItems.length === 0) {
             if (this.settings.debugMode) {
                 console.log(`[ChronoSort] No backlink items found in ${type}`);
-                // Debug: show what's actually in the container
-                console.log(`[ChronoSort] Container children:`, Array.from(container.children).map(c => ({
-                    tag: c.tagName,
-                    classes: c.className,
-                    firstChildText: c.querySelector('.tree-item-inner')?.textContent?.slice(0, 50)
-                })));
             }
             return;
         }
 
         if (this.settings.debugMode) {
-            console.log(`[ChronoSort] Found ${resultItems.length} items in ${type} using selector: ${usedSelector}`);
+            console.log(`[ChronoSort] Found ${resultItems.length} items in ${type}`);
         }
 
         if (this.settings.debugMode) {
@@ -314,7 +299,7 @@ export default class BacklinksChronoSortPlugin extends Plugin {
 
         // Move elements in DOM order (appendChild moves, doesn't clone)
         itemsWithTimestamps.forEach((item) => {
-            container.appendChild(item.element);
+            itemsParent.appendChild(item.element);
         });
 
         if (this.settings.debugMode) {
