@@ -80,10 +80,6 @@ export default class BacklinksChronoSortPlugin extends Plugin {
         if (this.styleEl) {
             this.styleEl.remove();
         }
-        // Remove our marker attributes from containers
-        document.querySelectorAll('[data-chronosort-done]').forEach(el => {
-            el.removeAttribute('data-chronosort-done');
-        });
     }
 
     async loadSettings() {
@@ -245,19 +241,9 @@ export default class BacklinksChronoSortPlugin extends Plugin {
     }
 
     /**
-     * Sort backlinks by moving DOM elements ONCE, then leave them alone.
-     * We mark containers as sorted and don't re-sort them to avoid
-     * interfering with Obsidian's expand/collapse/context features.
+     * Sort backlinks by moving DOM elements on every navigation.
      */
     private applySortOrder(container: HTMLElement, type: string) {
-        // Check if we've already sorted this container
-        if (container.hasAttribute('data-chronosort-done')) {
-            if (this.settings.debugMode) {
-                console.log(`[ChronoSort] Container ${type} already sorted, skipping`);
-            }
-            return;
-        }
-
         // Find all backlink result items
         const resultItems = container.querySelectorAll(':scope > .tree-item.search-result');
 
@@ -304,11 +290,8 @@ export default class BacklinksChronoSortPlugin extends Plugin {
             container.appendChild(item.element);
         });
 
-        // Mark container as sorted so we don't re-sort on future events
-        container.setAttribute('data-chronosort-done', 'true');
-
         if (this.settings.debugMode) {
-            console.log(`[ChronoSort] Sorted ${itemsWithTimestamps.length} items in ${type} (will not re-sort)`);
+            console.log(`[ChronoSort] Sorted ${itemsWithTimestamps.length} items in ${type}`);
         }
     }
 
