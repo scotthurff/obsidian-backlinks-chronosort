@@ -244,18 +244,45 @@ export default class BacklinksChronoSortPlugin extends Plugin {
      * Sort backlinks by moving DOM elements on every navigation.
      */
     private applySortOrder(container: HTMLElement, type: string) {
-        // Find all backlink result items
-        const resultItems = container.querySelectorAll(':scope > .tree-item.search-result');
+        // Try multiple selectors for backlink result items
+        const itemSelectors = [
+            ':scope > .tree-item.search-result',
+            ':scope > .search-result',
+            '.tree-item.search-result',
+            '.search-result'
+        ];
 
-        if (resultItems.length === 0) {
+        let resultItems: NodeListOf<Element> | null = null;
+        let usedSelector = '';
+
+        for (const selector of itemSelectors) {
+            const items = container.querySelectorAll(selector);
+            if (items.length > 0) {
+                resultItems = items;
+                usedSelector = selector;
+                break;
+            }
+        }
+
+        if (!resultItems || resultItems.length === 0) {
             if (this.settings.debugMode) {
                 console.log(`[ChronoSort] No backlink items found in ${type}`);
+                // Debug: show what's actually in the container
+                console.log(`[ChronoSort] Container children:`, Array.from(container.children).map(c => ({
+                    tag: c.tagName,
+                    classes: c.className,
+                    firstChildText: c.querySelector('.tree-item-inner')?.textContent?.slice(0, 50)
+                })));
             }
             return;
         }
 
         if (this.settings.debugMode) {
-            console.log(`[ChronoSort] Sorting ${resultItems.length} backlinks in ${type} (one-time)`);
+            console.log(`[ChronoSort] Found ${resultItems.length} items in ${type} using selector: ${usedSelector}`);
+        }
+
+        if (this.settings.debugMode) {
+            console.log(`[ChronoSort] Sorting ${resultItems.length} backlinks in ${type}`);
         }
 
         // Collect items with timestamps
